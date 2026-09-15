@@ -102,7 +102,8 @@
 
   <div class="card">
     <h2>Las compras que más pesaron</h2>
-    <p class="note">Celdas banco × tipo de cambio con mayor monto en el período. Empuje calculado igual que arriba, a nivel de celda.</p>
+    <p class="note">Celdas banco × tipo de cambio en el período. Empuje calculado igual que arriba, a nivel de celda. Por defecto se muestran las 15 de mayor monto; al elegir un nivel de precio se muestran todas las celdas de ese nivel.</p>
+    <div class="controls"><label>Nivel de TC <select id="selTc"></select></label><span class="small" id="tcinfo"></span></div>
     <div class="tblwrap"><table id="tbl-celdas"></table></div>
   </div>
 
@@ -249,11 +250,28 @@
       rows.map(r => `<tr><td>${short(r.banco)}</td><td>${fmtN(r.monto)}</td><td>${fmtN(r.share * 100, 1)} %</td><td>${fmtN(r.n)}</td><td>${fmtTC(r.tc)}</td><td>${r.tc == null ? '—' : signed(r.tc - A.tco, 2)}</td><td>${signed(r.empuje * 100, 2)}</td><td class="bar">${bar(r.empuje, maxE)}</td><td>${r.aporte == null ? '—' : signed(r.aporte * 100, 2)}</td></tr>`).join('') +
       `<tr><td><b>Total</b></td><td><b>${fmtN(A.M)}</b></td><td>100 %</td><td>${fmtN(A.N)}</td><td><b>${fmtTC(A.tco)}</b></td><td></td><td>0,00</td><td></td><td>${B ? signed((A.tco - B.tco) * 100, 2) : '—'}</td></tr></tbody>`;
 
-    const celdas = A.celdas.sort((a, b) => b.monto - a.monto).slice(0, 15);
-    const maxC = Math.max(...celdas.map(c => Math.abs(c.empuje)), 1e-9);
-    document.getElementById('tbl-celdas').innerHTML = `<thead><tr><th>Banco</th><th>TC (Bs/USD)</th><th>USD comprados</th><th>Partic.</th><th>Ops</th><th>vs. TCO</th><th>Empuje (ctvs.)</th><th></th></tr></thead><tbody>` +
-      celdas.map(c => `<tr><td>${short(c.banco)}</td><td>${fmtN(c.tc, 4)}</td><td>${fmtN(c.monto)}</td><td>${fmtN(c.share * 100, 1)} %</td><td>${fmtN(c.n)}</td><td>${signed(c.tc - A.tco, 2)}</td><td>${signed(c.empuje * 100, 2)}</td><td class="bar">${bar(c.empuje, maxC)}</td></tr>`).join('') + '</tbody>';
+    // selector de nivel de TC: niveles del período con su monto total
+    const porNivel = new Map();
+    for (const c of A.celdas) { const v = porNivel.get(c.tc) || {monto: 0, n: 0}; v.monto += c.monto; v.n += c.n; porNivel.set(c.tc, v); }
+    const niveles = [...porNivel.entries()].sort((a, b) => a[0] - b[0]);
+    const prevTc = selTc.value;
+    selTc.innerHTML = '<option value="">todos (top 15 por monto)</option>' + niveles.map(([tc, v]) => `<option value="${tc}">${fmtN(tc, 4)} — USD ${fmtN(v.monto)} · ${fmtN(v.n)} ops</option>`).join('');
+    selTc.value = [...selTc.options].some(o => o.value === prevTc) ? prevTc : '';
+    renderCeldas(A);
   }
+  function renderCeldas(A) {
+    const nivel = selTc.value === '' ? null : +selTc.value;
+    let celdas = nivel == null ? A.celdas.slice().sort((a, b) => b.monto - a.monto).slice(0, 15)
+      : A.celdas.filter(c => c.tc === nivel).sort((a, b) => b.monto - a.monto);
+    const maxC = Math.max(...celdas.map(c => Math.abs(c.empuje)), 1e-9);
+    const tM = celdas.reduce((s, c) => s + c.monto, 0), tN = celdas.reduce((s, c) => s + c.n, 0), tE = celdas.reduce((s, c) => s + c.empuje, 0);
+    document.getElementById('tcinfo').textContent = nivel == null ? '' : `${celdas.length} bancos compraron a ${fmtN(nivel, 4)} · USD ${fmtN(tM)} (${fmtN(tM / A.M * 100, 1)} % del período) · ${fmtN(tN)} operaciones`;
+    document.getElementById('tbl-celdas').innerHTML = `<thead><tr><th>Banco</th><th>TC (Bs/USD)</th><th>USD comprados</th><th>Partic.</th><th>Ops</th><th>USD por op.</th><th>vs. TCO</th><th>Empuje (ctvs.)</th><th></th></tr></thead><tbody>` +
+      celdas.map(c => `<tr><td>${short(c.banco)}</td><td>${fmtN(c.tc, 4)}</td><td>${fmtN(c.monto)}</td><td>${fmtN(c.share * 100, 1)} %</td><td>${fmtN(c.n)}</td><td>${c.n ? fmtN(c.monto / c.n) : '—'}</td><td>${signed(c.tc - A.tco, 2)}</td><td>${signed(c.empuje * 100, 2)}</td><td class="bar">${bar(c.empuje, maxC)}</td></tr>`).join('') +
+      (nivel == null ? '' : `<tr><td><b>Total del nivel</b></td><td></td><td><b>${fmtN(tM)}</b></td><td>${fmtN(tM / A.M * 100, 1)} %</td><td>${fmtN(tN)}</td><td></td><td></td><td>${signed(tE * 100, 2)}</td><td></td></tr>`) + '</tbody>';
+  }
+  const selTc = document.getElementById('selTc');
+  selTc.addEventListener('change', () => { const list = periodos[P]; const per = list.find(x => x.key === sel.value); renderCeldas(agregar(per.dias)); });
   setPeriodo('dia'); render();
 })().catch(e => { document.querySelector('.wrap').insertAdjacentHTML('beforeend', `<p class="up">No se pudieron cargar los datos (${e.message}). ¿Existe data/tco.json?</p>`); });
 </script>
