@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TCO Bolivia — bases de cálculo</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #fcfcfb; --surface: #ffffff; --line: #e4e3df; --grid: #eeede9;
+    --text: #0b0b0b; --text-2: #52514e; --text-3: #8a8985;
+    --accent: #2a78d6; --accent-soft: #cde2fb; --mute: #c9c8c2;
+    --up: #e34948; --down: #2a78d6; --mid: #f0efec;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #1a1a19; --surface: #222221; --line: #3a3a37; --grid: #2c2c2a;
+      --text: #ffffff; --text-2: #c3c2b7; --text-3: #8a8985;
+      --accent: #3987e5; --accent-soft: #1c5cab; --mute: #4a4a46;
+      --up: #e66767; --down: #3987e5; --mid: #383835;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.45; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: var(--text-2); margin: 0 0 20px; }
+  .sub a { color: inherit; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .kpi .l { color: var(--text-2); font-size: 12px; }
+  .kpi .v { font-size: 26px; font-weight: 600; letter-spacing: -0.01em; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .kpi .v.hero { font-size: 40px; }
+  .kpi .d { color: var(--text-2); font-size: 12px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 14px; font-weight: 600; margin: 0 0 4px; }
+  .card p.note { color: var(--text-2); margin: 0 0 12px; font-size: 13px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 12px; }
+  .controls label { color: var(--text-2); font-size: 13px; }
+  select, button { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; padding: 5px 12px; cursor: pointer; }
+  .seg button.on { background: var(--accent); color: #fff; }
+  svg { display: block; width: 100%; height: auto; }
+  .grid line { stroke: var(--grid); stroke-width: 1; }
+  .axis text { fill: var(--text-3); font-size: 11px; }
+  .axis line { stroke: var(--line); }
+  .tip { position: fixed; pointer-events: none; background: var(--text); color: var(--bg); padding: 6px 9px; border-radius: 6px; font-size: 12px; white-space: nowrap; display: none; z-index: 10; font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+  th { color: var(--text-2); font-weight: 500; font-size: 12px; }
+  th:first-child, td:first-child { text-align: left; }
+  td.bar { padding: 0 8px; width: 180px; }
+  .b { display: flex; align-items: center; height: 100%; }
+  .b span { display: block; height: 10px; border-radius: 2px; }
+  .up { color: var(--up); } .down { color: var(--down); }
+  .tblwrap { overflow-x: auto; }
+  .legend { display: flex; gap: 16px; font-size: 12px; color: var(--text-2); margin-top: 6px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .small { font-size: 12px; color: var(--text-3); }
+  .foot { color: var(--text-3); font-size: 12px; margin-top: 24px; }
+  .foot a { color: inherit; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Tipo de Cambio Oficial (TCO) — bases de cálculo</h1>
+  <p class="sub">Operaciones de compra de dólares de los bancos con sus clientes, publicadas por el
+    <a href="https://www.bcb.gob.bo/bcb_tco_publico_detalle_historico.php" target="_blank" rel="noopener">Banco Central de Bolivia</a>.
+    Actualizado <span id="gen">…</span>.</p>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="card">
+    <h2>TCO diario y dólares comprados</h2>
+    <p class="note">Cada punto es una fecha de corte. Pasa el cursor para ver el detalle; haz clic para seleccionar el día abajo.</p>
+    <div id="chart-tco"></div>
+    <div id="chart-vol"></div>
+  </div>
+
+  <div class="card">
+    <div class="controls">
+      <div class="seg" id="seg">
+        <button data-p="dia" class="on">Día</button>
+        <button data-p="semana">Semana</button>
+        <button data-p="mes">Mes</button>
+      </div>
+      <label>Período <select id="sel"></select></label>
+      <span class="small" id="perinfo"></span>
+    </div>
+
+    <h2>Qué bancos movieron la aguja</h2>
+    <p class="note">
+      <b>Empuje</b> = (TC del banco − TCO) × participación del banco en los dólares comprados. Mide cuánto alejó cada banco el TCO del promedio; suma cero.
+      <b>Aporte al cambio</b> = participación × TC del banco, menos lo mismo en el período anterior. Suma exactamente la variación del TCO.
+    </p>
+    <div class="tblwrap"><table id="tbl-bancos"></table></div>
+    <div class="legend"><span><i style="background:var(--up)"></i>Empuja el TCO hacia arriba</span><span><i style="background:var(--down)"></i>Empuja el TCO hacia abajo</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Las compras que más pesaron</h2>
+    <p class="note">Celdas banco × tipo de cambio con mayor monto en el período. Empuje calculado igual que arriba, a nivel de celda.</p>
+    <div class="tblwrap"><table id="tbl-celdas"></table></div>
+  </div>
+
+  <p class="foot">Datos crudos: <a href="data/operaciones.csv">operaciones.csv</a> · <a href="data/diario.csv">diario.csv</a> · <a href="data/tco.db">tco.db</a> (SQLite) · <a href="data/verificacion.csv">verificación</a> del TCO recalculado contra el publicado.
+    Fuente: Banco Central de Bolivia, Gerencia de Entidades Financieras. Elaboración propia.</p>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+(async function () {
+  const R = await fetch('data/tco.json', {cache: 'no-store'}).then(r => r.json());
+  const fmtN = (x, d = 0) => x == null ? '—' : x.toLocaleString('es-BO', {minimumFractionDigits: d, maximumFractionDigits: d});
+  const fmtTC = x => x == null ? '—' : x.toLocaleString('es-BO', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const fmtD = s => { const [y, m, d] = s.split('-'); return `${d}/${m}/${y}`; };
+  const short = b => b.replace(/^BANCO (DE LA |DE |PYME )?/, '').replace('NACION ARGENTINA', 'NACIÓN ARG.').replace('MERCANTIL SANTA CRUZ', 'MERCANTIL SC').replace('NACIONAL DE BOLIVIA', 'BNB').replace('DE LA COMUNIDAD', 'COMUNIDAD');
+  document.getElementById('gen').textContent = R.generado.replace('T', ' ').replace('Z', ' UTC');
+
+  const ops = R.operaciones;
+  const total = R.total;               // por fecha_corte, ordenado
+  const dias = total.map(t => t.fecha_corte);
+
+  // ---------- períodos ----------
+  const isoWeek = s => { const d = new Date(s + 'T00:00:00Z'); const day = (d.getUTCDay() + 6) % 7; d.setUTCDate(d.getUTCDate() - day + 3); const y = d.getUTCFullYear(); const jan4 = new Date(Date.UTC(y, 0, 4)); const w = 1 + Math.round(((d - jan4) / 864e5 - 3 + ((jan4.getUTCDay() + 6) % 7)) / 7); return `${y}-S${String(w).padStart(2, '0')}`; };
+  const keyOf = { dia: s => s, semana: isoWeek, mes: s => s.slice(0, 7) };
+  const periodos = {};                 // p -> [{key, dias:[...]}]
+  for (const p of ['dia', 'semana', 'mes']) {
+    const m = new Map();
+    for (const d of dias) { const k = keyOf[p](d); if (!m.has(k)) m.set(k, []); m.get(k).push(d); }
+    periodos[p] = [...m.entries()].map(([key, ds]) => ({key, dias: ds}));
+  }
+  const labelPer = (p, per) => p === 'dia' ? fmtD(per.key) : p === 'semana' ? `${per.key} (${fmtD(per.dias[0])} – ${fmtD(per.dias[per.dias.length - 1])})` : per.key;
+
+  // agregado de un conjunto de días: por banco y por celda
+  function agregar(ds) {
+    const set = new Set(ds);
+    const porBanco = new Map(), porCelda = new Map();
+    let M = 0, V = 0, N = 0;
+    for (const o of ops) {
+      if (!set.has(o.fecha_corte)) continue;
+      M += o.monto_usd; V += o.monto_usd * o.tc; N += o.n_ops;
+      const b = porBanco.get(o.banco) || {banco: o.banco, monto: 0, v: 0, n: 0};
+      b.monto += o.monto_usd; b.v += o.monto_usd * o.tc; b.n += o.n_ops; porBanco.set(o.banco, b);
+      const ck = o.banco + '|' + o.tc;
+      const c = porCelda.get(ck) || {banco: o.banco, tc: o.tc, monto: 0, n: 0};
+      c.monto += o.monto_usd; c.n += o.n_ops; porCelda.set(ck, c);
+    }
+    const tco = M ? V / M : null;
+    const bancos = [...porBanco.values()].map(b => ({...b, share: M ? b.monto / M : 0, tc: b.monto ? b.v / b.monto : null}));
+    for (const b of bancos) b.empuje = b.tc == null ? 0 : (b.tc - tco) * b.share;
+    const celdas = [...porCelda.values()].map(c => ({...c, share: M ? c.monto / M : 0, empuje: (c.tc - tco) * (M ? c.monto / M : 0)}));
+    return {tco, M, N, bancos, celdas};
+  }
+
+  // ---------- KPIs ----------
+  const last = total[total.length - 1], prev = total[total.length - 2];
+  const dTco = prev ? last.tco - prev.tco : null;
+  document.getElementById('kpis').innerHTML = `
+    <div class="kpi"><div class="l">TCO — corte ${fmtD(last.fecha_corte)}</div><div class="v hero">${fmtTC(last.tco)}</div>
+      <div class="d">Bs/USD, vigente ${fmtD(last.vigencia)}${dTco == null ? '' : ` · <span class="${dTco > 0 ? 'up' : dTco < 0 ? 'down' : ''}">${dTco > 0 ? '+' : ''}${fmtTC(dTco)}</span> vs. corte anterior`}</div></div>
+    <div class="kpi"><div class="l">Dólares comprados ese día</div><div class="v">${fmtN(last.monto_usd / 1e6, 1)} M</div><div class="d">USD · ${fmtN(last.n_ops)} operaciones</div></div>
+    <div class="kpi"><div class="l">Días de corte en la serie</div><div class="v">${total.length}</div><div class="d">${fmtD(total[0].fecha_corte)} – ${fmtD(last.fecha_corte)}</div></div>
+    <div class="kpi"><div class="l">Verificación</div><div class="v">${R.verificacion.filter(v => v.ok).length}/${R.verificacion.length}</div><div class="d">días en que el TCO recalculado coincide con el publicado</div></div>`;
+
+  // ---------- gráficos SVG ----------
+  const tip = document.getElementById('tip');
+  const showTip = (html, ev) => { tip.innerHTML = html; tip.style.display = 'block'; const x = Math.min(ev.clientX + 14, window.innerWidth - tip.offsetWidth - 8); tip.style.left = x + 'px'; tip.style.top = (ev.clientY + 14) + 'px'; };
+  const hideTip = () => tip.style.display = 'none';
+
+  const W = 1000, PL = 48, PR = 12;
+  const band = (W - PL - PR) / Math.max(dias.length, 1);
+  const xOf = i => PL + (i + 0.5) * band;
+  const tickIdx = () => { const step = Math.max(1, Math.ceil(dias.length / 10)); return dias.map((_, i) => i).filter(i => i % step === 0 || i === dias.length - 1); };
+  const ns = 'http://www.w3.org/2000/svg';
+  const el = (t, a = {}, txt) => { const e = document.createElementNS(ns, t); for (const k in a) e.setAttribute(k, a[k]); if (txt != null) e.textContent = txt; return e; };
+
+  function lineChart() {
+    const H = 260, PT = 12, PB = 28;
+    const ys = total.map(t => t.tco);
+    let lo = Math.min(...ys), hi = Math.max(...ys); const pad = (hi - lo) * 0.1 || 0.1; lo -= pad; hi += pad;
+    const yOf = v => PT + (hi - v) / (hi - lo) * (H - PT - PB);
+    const svg = el('svg', {viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'TCO diario'});
+    const g = el('g', {class: 'grid'}); const ax = el('g', {class: 'axis'});
+    const nt = 4;
+    for (let k = 0; k <= nt; k++) { const v = lo + (hi - lo) * k / nt; g.appendChild(el('line', {x1: PL, x2: W - PR, y1: yOf(v), y2: yOf(v)})); ax.appendChild(el('text', {x: PL - 6, y: yOf(v) + 4, 'text-anchor': 'end'}, fmtTC(v))); }
+    for (const i of tickIdx()) ax.appendChild(el('text', {x: xOf(i), y: H - 8, 'text-anchor': 'middle'}, fmtD(dias[i]).slice(0, 5)));
+    svg.appendChild(g); svg.appendChild(ax);
+    const d = total.map((t, i) => `${i ? 'L' : 'M'}${xOf(i).toFixed(1)},${yOf(t.tco).toFixed(1)}`).join(' ');
+    svg.appendChild(el('path', {d, fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2, 'stroke-linejoin': 'round'}));
+    const cross = el('line', {y1: PT, y2: H - PB, stroke: 'var(--text-3)', 'stroke-dasharray': '3 3', style: 'display:none'});
+    const dot = el('circle', {r: 5, fill: 'var(--accent)', stroke: 'var(--surface)', 'stroke-width': 2, style: 'display:none'});
+    svg.appendChild(cross); svg.appendChild(dot);
+    const lastPt = el('circle', {cx: xOf(dias.length - 1), cy: yOf(last.tco), r: 4, fill: 'var(--accent)'});
+    svg.appendChild(lastPt);
+    svg.appendChild(el('text', {x: xOf(dias.length - 1) - 8, y: yOf(last.tco) - 10, 'text-anchor': 'end', fill: 'var(--text)', 'font-size': 12, 'font-weight': 600}, fmtTC(last.tco)));
+    attachHover(svg, i => { cross.setAttribute('x1', xOf(i)); cross.setAttribute('x2', xOf(i)); cross.style.display = ''; dot.setAttribute('cx', xOf(i)); dot.setAttribute('cy', yOf(total[i].tco)); dot.style.display = ''; },
+      () => { cross.style.display = 'none'; dot.style.display = 'none'; });
+    return svg;
+  }
+  function volChart() {
+    const H = 140, PT = 8, PB = 24;
+    const hi = Math.max(...total.map(t => t.monto_usd)) * 1.08;
+    const yOf = v => PT + (1 - v / hi) * (H - PT - PB);
+    const svg = el('svg', {viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Dólares comprados por día'});
+    const g = el('g', {class: 'grid'}); const ax = el('g', {class: 'axis'});
+    for (let k = 0; k <= 2; k++) { const v = hi * k / 2; g.appendChild(el('line', {x1: PL, x2: W - PR, y1: yOf(v), y2: yOf(v)})); ax.appendChild(el('text', {x: PL - 6, y: yOf(v) + 4, 'text-anchor': 'end'}, k ? fmtN(v / 1e6, 0) + ' M' : '0')); }
+    for (const i of tickIdx()) ax.appendChild(el('text', {x: xOf(i), y: H - 6, 'text-anchor': 'middle'}, fmtD(dias[i]).slice(0, 5)));
+    svg.appendChild(g); svg.appendChild(ax);
+    const bw = Math.max(2, Math.min(band - 2, 40));
+    total.forEach((t, i) => svg.appendChild(el('rect', {x: xOf(i) - bw / 2, y: yOf(t.monto_usd), width: bw, height: yOf(0) - yOf(t.monto_usd), rx: 2, fill: 'var(--mute)', 'data-i': i})));
+    attachHover(svg, i => { svg.querySelectorAll('rect').forEach(r => r.setAttribute('fill', +r.dataset.i === i ? 'var(--accent)' : 'var(--mute)')); },
+      () => svg.querySelectorAll('rect').forEach(r => r.setAttribute('fill', 'var(--mute)')));
+    return svg;
+  }
+  function attachHover(svg, on, off) {
+    svg.style.cursor = 'pointer';
+    const idx = ev => { const r = svg.getBoundingClientRect(); const x = (ev.clientX - r.left) / r.width * W; let best = 0, bd = 1e9; dias.forEach((_, i) => { const d = Math.abs(xOf(i) - x); if (d < bd) { bd = d; best = i; } }); return best; };
+    svg.addEventListener('mousemove', ev => { const i = idx(ev); on(i); const t = total[i], p = total[i - 1]; showTip(`<b>${fmtD(t.fecha_corte)}</b> · vigente ${fmtD(t.vigencia)}<br>TCO ${fmtTC(t.tco)}${p ? ` (${t.tco - p.tco >= 0 ? '+' : ''}${fmtTC(t.tco - p.tco)})` : ''}<br>USD ${fmtN(t.monto_usd)} · ${fmtN(t.n_ops)} ops`, ev); });
+    svg.addEventListener('mouseleave', () => { off(); hideTip(); });
+    svg.addEventListener('click', ev => { const i = idx(ev); setPeriodo('dia'); sel.value = dias[i]; render(); document.getElementById('seg').scrollIntoView({behavior: 'smooth', block: 'start'}); });
+  }
+  document.getElementById('chart-tco').appendChild(lineChart());
+  document.getElementById('chart-vol').appendChild(volChart());
+
+  // ---------- tablas ----------
+  const sel = document.getElementById('sel');
+  let P = 'dia';
+  function setPeriodo(p) { P = p; document.querySelectorAll('#seg button').forEach(b => b.classList.toggle('on', b.dataset.p === p)); sel.innerHTML = periodos[p].map(per => `<option value="${per.key}">${labelPer(p, per)}</option>`).join(''); sel.value = periodos[p][periodos[p].length - 1].key; }
+  document.querySelectorAll('#seg button').forEach(b => b.addEventListener('click', () => { setPeriodo(b.dataset.p); render(); }));
+  sel.addEventListener('change', render);
+
+  const bar = (v, max, cls) => { const w = max ? Math.abs(v) / max * 80 : 0; return `<div class="b" style="justify-content:${v < 0 ? 'flex-end' : 'flex-start'};width:100%"><div style="width:50%;display:flex;justify-content:flex-end">${v < 0 ? `<span style="width:${w}px;background:var(--down)"></span>` : ''}</div><div style="width:50%">${v > 0 ? `<span style="width:${w}px;background:var(--up)"></span>` : ''}</div></div>`; };
+  const signed = (v, d = 2) => v == null ? '—' : `<span class="${v > 0.0005 ? 'up' : v < -0.0005 ? 'down' : ''}">${v > 0 ? '+' : ''}${fmtN(v, d)}</span>`;
+
+  function render() {
+    const list = periodos[P]; const i = list.findIndex(x => x.key === sel.value); const per = list[i], ant = list[i - 1];
+    const A = agregar(per.dias), B = ant ? agregar(ant.dias) : null;
+    document.getElementById('perinfo').textContent = `TCO ${P === 'dia' ? '' : 'ponderado '}${fmtTC(A.tco)} · USD ${fmtN(A.M)} · ${fmtN(A.N)} operaciones` + (B ? ` · anterior ${fmtTC(B.tco)} (${A.tco - B.tco >= 0 ? '+' : ''}${fmtTC(A.tco - B.tco)})` : '');
+
+    const prevBy = new Map(B ? B.bancos.map(b => [b.banco, b]) : []);
+    const rows = A.bancos.map(b => { const pb = prevBy.get(b.banco); const aporte = B ? b.share * (b.tc ?? 0) - (pb ? pb.share * (pb.tc ?? 0) : 0) : null; return {...b, aporte}; })
+      .sort((a, b) => Math.abs(b.empuje) - Math.abs(a.empuje));
+    const maxE = Math.max(...rows.map(r => Math.abs(r.empuje)), 1e-9);
+    document.getElementById('tbl-bancos').innerHTML = `<thead><tr><th>Banco</th><th>USD comprados</th><th>Partic.</th><th>Ops</th><th>TC ponderado</th><th>vs. TCO</th><th>Empuje (ctvs.)</th><th></th><th>Aporte al cambio (ctvs.)</th></tr></thead><tbody>` +
+      rows.map(r => `<tr><td>${short(r.banco)}</td><td>${fmtN(r.monto)}</td><td>${fmtN(r.share * 100, 1)} %</td><td>${fmtN(r.n)}</td><td>${fmtTC(r.tc)}</td><td>${r.tc == null ? '—' : signed(r.tc - A.tco, 2)}</td><td>${signed(r.empuje * 100, 2)}</td><td class="bar">${bar(r.empuje, maxE)}</td><td>${r.aporte == null ? '—' : signed(r.aporte * 100, 2)}</td></tr>`).join('') +
+      `<tr><td><b>Total</b></td><td><b>${fmtN(A.M)}</b></td><td>100 %</td><td>${fmtN(A.N)}</td><td><b>${fmtTC(A.tco)}</b></td><td></td><td>0,00</td><td></td><td>${B ? signed((A.tco - B.tco) * 100, 2) : '—'}</td></tr></tbody>`;
+
+    const celdas = A.celdas.sort((a, b) => b.monto - a.monto).slice(0, 15);
+    const maxC = Math.max(...celdas.map(c => Math.abs(c.empuje)), 1e-9);
+    document.getElementById('tbl-celdas').innerHTML = `<thead><tr><th>Banco</th><th>TC (Bs/USD)</th><th>USD comprados</th><th>Partic.</th><th>Ops</th><th>vs. TCO</th><th>Empuje (ctvs.)</th><th></th></tr></thead><tbody>` +
+      celdas.map(c => `<tr><td>${short(c.banco)}</td><td>${fmtN(c.tc, 4)}</td><td>${fmtN(c.monto)}</td><td>${fmtN(c.share * 100, 1)} %</td><td>${fmtN(c.n)}</td><td>${signed(c.tc - A.tco, 2)}</td><td>${signed(c.empuje * 100, 2)}</td><td class="bar">${bar(c.empuje, maxC)}</td></tr>`).join('') + '</tbody>';
+  }
+  setPeriodo('dia'); render();
+})().catch(e => { document.querySelector('.wrap').insertAdjacentHTML('beforeend', `<p class="up">No se pudieron cargar los datos (${e.message}). ¿Existe data/tco.json?</p>`); });
+</script>
+</body>
+</html>
