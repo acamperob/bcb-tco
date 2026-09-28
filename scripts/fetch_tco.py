@@ -7,12 +7,19 @@ Fuente:
   https://www.bcb.gob.bo/bcb_tco_publico_detalle_historico.php   (lista de fechas)
   https://www.bcb.gob.bo/bcb_tco_publico_descargar_csv.php?desde=YYYY-MM-DD&hasta=YYYY-MM-DD
 
+Metodología del TCO:
+  - Cortes hasta el 24/09/2026: promedio ponderado por monto (RD 88/2026).
+  - Cortes desde el 25/09/2026: mediana ponderada por monto (RD 142/2026).
+  El script calcula ambos para todos los días y verifica contra el vigente.
+
 Salidas (todas dentro de data/):
   raw/YYYY-MM-DD.csv   CSV original por fecha de corte, tal cual lo entrega el BCB
-  operaciones.csv      tabla larga: una fila por (fecha_corte, banco, tipo_cambio)
-  diario.csv           una fila por (fecha_corte, banco) con monto, N° y TC ponderado
+  operaciones.csv      una fila por (fecha_corte, banco, tipo_cambio)
+  diario.csv           una fila por (fecha_corte, banco)
+  total.csv            una fila por fecha de corte: TCO publicado, promedio, mediana, método
+  verificacion.csv     TCO recalculado con el método vigente vs publicado
   tco.json             todo lo anterior, compacto, para el dashboard
-  tco.db               SQLite con las mismas tablas, para consultas ad hoc
+  tco.db               SQLite con las mismas tablas
 
 Solo usa la biblioteca estándar. Idempotente: cada corrida descarga únicamente
 las fechas que aún no están en raw/ y reconstruye las tablas derivadas.
@@ -21,7 +28,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import io
 import json
 import re
 import sqlite3
@@ -29,7 +35,7 @@ import sys
 import time
 import unicodedata
 import urllib.request
-from datetime import date, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 BASE = "https://www.bcb.gob.bo"
@@ -38,9 +44,22 @@ URL_CSV = f"{BASE}/bcb_tco_publico_descargar_csv.php?desde={{d}}&hasta={{d}}"
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/128.0 Safari/537.36")
 
+# Primer corte calculado con mediana ponderada (Resolución de Directorio BCB 142/2026)
+CAMBIO_METODO = "2026-09-25"
+METODOLOGIA = [
+    {"desde": "2026-06-26", "hasta": "2026-09-24", "metodo": "promedio",
+     "norma": "RD 88/2026", "descripcion": "Promedio ponderado por monto"},
+    {"desde": CAMBIO_METODO, "hasta": None, "metodo": "mediana",
+     "norma": "RD 142/2026", "descripcion": "Mediana ponderada por monto"},
+]
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 RAW = DATA / "raw"
+
+
+def metodo_de(fecha_corte: str) -> str:
+    return "mediana" if fecha_corte >= CAMBIO_METODO else "promedio"
 
 
 # --------------------------------------------------------------------------- #
@@ -66,8 +85,7 @@ def fechas_publicadas() -> list[str]:
     m = re.search(r'data-fechas=(["\'])(.*?)\1', html, re.S)
     if not m:
         raise RuntimeError("No se encontró data-fechas en la página del BCB; ¿cambió el HTML?")
-    raw = m.group(2).replace("&quot;", '"')
-    fechas = json.loads(raw)
+    fechas = json.loads(m.group(2).replace("&quot;", '"'))
     return sorted(f for f in fechas if re.fullmatch(r"\d{4}-\d{2}-\d{2}", f))
 
 
@@ -78,8 +96,7 @@ def descargar_faltantes(fechas: list[str]) -> list[str]:
         destino = RAW / f"{f}.csv"
         if destino.exists() and destino.stat().st_size > 500:
             continue
-        contenido = http_get(URL_CSV.format(d=f))
-        texto = contenido.decode("utf-8", errors="replace")
+        texto = http_get(URL_CSV.format(d=f)).decode("utf-8", errors="replace")
         if "Fecha de corte" not in texto:
             print(f"  aviso: {f} devolvió un CSV sin datos, se omite", file=sys.stderr)
             continue
@@ -91,80 +108,120 @@ def descargar_faltantes(fechas: list[str]) -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
-# Parseo
+# Parseo (tolera el formato original y el de texto-fórmula de Excel, ="1.234")
 # --------------------------------------------------------------------------- #
+def limpiar(s: str) -> str:
+    s = (s or "").strip()
+    if s.startswith("="):
+        s = s[1:]
+    return s.strip().strip('"').strip()
+
+
 def norm_banco(nombre: str) -> str:
-    """Unifica variantes (BANCO DE CRÉDITO / BANCO DE CREDITO, etc.)."""
-    s = unicodedata.normalize("NFKD", nombre).encode("ascii", "ignore").decode()
+    s = unicodedata.normalize("NFKD", limpiar(nombre)).encode("ascii", "ignore").decode()
     return re.sub(r"\s+", " ", s).strip().upper()
 
 
 def num(s: str) -> float | None:
-    """'1.234.567' -> 1234567 ; '11,5200' -> 11.52 ; '-' -> None."""
-    s = (s or "").strip()
+    """'1.234.567' -> 1234567 ; '11,5200' -> 11.52 ; '-' o '' -> None."""
+    s = limpiar(s)
     if s in ("", "-"):
         return None
     return float(s.replace(".", "").replace(",", "."))
 
 
-def parse_raw(path: Path) -> list[dict]:
-    """Devuelve filas largas: fecha_corte, vigencia, banco, tc, n_ops, monto_usd."""
-    filas = []
-    lineas = path.read_text(encoding="utf-8").splitlines()
-    # localizar encabezado
-    idx = next(i for i, l in enumerate(lineas) if l.startswith('"Fecha de corte"'))
+def vigencia_rango(s: str) -> tuple[str, str]:
+    """'2026-09-26' -> (d, d) ; '2026-09-26 al 2026-09-28' -> (desde, hasta)."""
+    fechas = re.findall(r"\d{4}-\d{2}-\d{2}", s or "")
+    if not fechas:
+        return "", ""
+    return fechas[0], fechas[-1]
+
+
+def leer(path: Path) -> tuple[list[str], list[list[str]]]:
+    lineas = path.read_text(encoding="utf-8-sig").splitlines()
+    idx = next(i for i, l in enumerate(lineas) if limpiar(l.split(";")[0]) == "Fecha de corte")
     header = next(csv.reader([lineas[idx]], delimiter=";"))
-    bancos = []  # (nombre, col_n, col_monto)
-    col = 3
+    filas = [next(csv.reader([l], delimiter=";")) for l in lineas[idx + 2:] if l.strip()]
+    return header, filas
+
+
+def columnas_bancos(header: list[str]) -> list[tuple[str, int]]:
+    out, col = [], 3
     while col < len(header):
-        nombre = header[col].strip()
+        nombre = limpiar(header[col])
         if nombre:
-            bancos.append((norm_banco(nombre), col, col + 1))
+            out.append((norm_banco(nombre), col))
         col += 2
-    for linea in lineas[idx + 2:]:
-        if not linea.strip():
-            continue
-        campos = next(csv.reader([linea], delimiter=";"))
+    return out
+
+
+def parse_raw(path: Path) -> tuple[list[dict], dict[str, float | None]]:
+    """Filas largas (fecha, vigencia, banco, tc, n_ops, monto) y fila TCO publicada."""
+    header, filas = leer(path)
+    bancos = columnas_bancos(header)
+    ops, publicado = [], {}
+    for campos in filas:
         if len(campos) < 4:
             continue
-        fecha_corte, vigencia, tc_txt = campos[0], campos[1], campos[2].strip()
-        if tc_txt in ("TOTAL", "TCO"):
-            continue  # se recalculan; la fila TCO se usa solo para verificar
-        tc = num(tc_txt)
-        for banco, cn, cm in bancos:
+        fecha_corte = limpiar(campos[0])
+        v_desde, v_hasta = vigencia_rango(campos[1])
+        etiqueta = limpiar(campos[2])
+        if etiqueta == "TCO":
+            for banco, c in bancos:
+                publicado[banco] = num(campos[c]) if c < len(campos) else None
+            continue
+        if etiqueta == "TOTAL":
+            continue
+        tc = num(etiqueta)
+        for banco, c in bancos:
             if banco == "TOTAL BANCOS":
                 continue
-            n = num(campos[cn]) if cn < len(campos) else None
-            monto = num(campos[cm]) if cm < len(campos) else None
+            n = num(campos[c]) if c < len(campos) else None
+            monto = num(campos[c + 1]) if c + 1 < len(campos) else None
             if n is None and monto is None:
                 continue
-            filas.append({
-                "fecha_corte": fecha_corte,
-                "vigencia": vigencia,
-                "banco": banco,
-                "tc": tc,
-                "n_ops": int(n or 0),
-                "monto_usd": monto or 0.0,
-            })
-    return filas
+            ops.append({"fecha_corte": fecha_corte, "vigencia": v_desde, "vigencia_hasta": v_hasta,
+                        "banco": banco, "tc": tc, "n_ops": int(n or 0), "monto_usd": monto or 0.0})
+    return ops, publicado
 
 
-def tco_publicado(path: Path) -> dict[str, float | None]:
-    """Fila 'TCO' del CSV: TC ponderado por banco y total, tal como lo publica el BCB."""
-    lineas = path.read_text(encoding="utf-8").splitlines()
-    idx = next(i for i, l in enumerate(lineas) if l.startswith('"Fecha de corte"'))
-    header = next(csv.reader([lineas[idx]], delimiter=";"))
-    out = {}
-    for linea in lineas[idx + 2:]:
-        campos = next(csv.reader([linea], delimiter=";")) if linea.strip() else []
-        if len(campos) > 3 and campos[2].strip() == "TCO":
-            col = 3
-            while col < len(header):
-                nombre = header[col].strip()
-                if nombre:
-                    out[norm_banco(nombre)] = num(campos[col]) if col < len(campos) else None
-                col += 2
-    return out
+# --------------------------------------------------------------------------- #
+# Estadísticos
+# --------------------------------------------------------------------------- #
+def r2(x: float | None) -> float | None:
+    return None if x is None else round(x + 1e-9, 2)
+
+
+def promedio_pond(celdas: list[tuple[float, float]]) -> float | None:
+    t = sum(m for _, m in celdas)
+    return sum(tc * m for tc, m in celdas) / t if t else None
+
+
+def mediana_pond(celdas: list[tuple[float, float]]) -> float | None:
+    """Primer precio (orden ascendente) donde el monto acumulado alcanza la mitad del total."""
+    t = sum(m for _, m in celdas)
+    if not t:
+        return None
+    acum = 0.0
+    for tc, m in sorted(celdas):
+        acum += m
+        if acum >= t / 2 - 1e-9:
+            return tc
+    return None
+
+
+def estadistico(celdas: list[tuple[float, float]], metodo: str) -> float | None:
+    return mediana_pond(celdas) if metodo == "mediana" else promedio_pond(celdas)
+
+
+def colchones(celdas: list[tuple[float, float]], mediana: float) -> tuple[float, float]:
+    """USD adicionales necesarios para mover la mediana un nivel abajo / arriba.
+    Abajo: compras nuevas a cualquier precio < mediana. Arriba: a cualquier precio > mediana."""
+    t = sum(m for _, m in celdas)
+    debajo = sum(m for tc, m in celdas if tc < mediana)
+    hasta = sum(m for tc, m in celdas if tc <= mediana)
+    return max(t - 2 * debajo, 0.0), max(2 * hasta - t, 0.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -172,86 +229,110 @@ def tco_publicado(path: Path) -> dict[str, float | None]:
 # --------------------------------------------------------------------------- #
 def consolidar() -> dict:
     ops: list[dict] = []
-    verificacion = []
+    total, diario, verificacion = [], [], []
     for path in sorted(RAW.glob("*.csv")):
-        filas = parse_raw(path)
+        filas, publicado = parse_raw(path)
+        if not filas:
+            continue
+        fecha = path.stem
+        metodo = metodo_de(fecha)
         ops.extend(filas)
-        # verificación: TCO recalculado vs publicado
-        tot_m = sum(r["monto_usd"] for r in filas)
-        tot_v = sum(r["monto_usd"] * r["tc"] for r in filas)
-        pub = tco_publicado(path).get("TOTAL BANCOS")
-        rec = round(tot_v / tot_m, 2) if tot_m else None
-        verificacion.append({"fecha_corte": path.stem, "tco_publicado": pub,
-                             "tco_recalculado": rec,
-                             "ok": (pub is not None and rec is not None and abs(pub - rec) < 0.006)})
 
-    # diario por banco
-    diario: dict[tuple, dict] = {}
-    for r in ops:
-        k = (r["fecha_corte"], r["banco"])
-        d = diario.setdefault(k, {"fecha_corte": r["fecha_corte"], "vigencia": r["vigencia"],
-                                  "banco": r["banco"], "n_ops": 0, "monto_usd": 0.0, "_v": 0.0})
-        d["n_ops"] += r["n_ops"]
-        d["monto_usd"] += r["monto_usd"]
-        d["_v"] += r["monto_usd"] * r["tc"]
-    for d in diario.values():
-        d["tc_ponderado"] = round(d["_v"] / d["monto_usd"], 4) if d["monto_usd"] else None
-        del d["_v"]
+        celdas = [(r["tc"], r["monto_usd"]) for r in filas]
+        prom, med = promedio_pond(celdas), mediana_pond(celdas)
+        oficial_calc = r2(med if metodo == "mediana" else prom)
+        pub = publicado.get("TOTAL BANCOS")
+        abajo, arriba = colchones(celdas, med) if med is not None else (None, None)
+        total.append({
+            "fecha_corte": fecha, "vigencia": filas[0]["vigencia"], "vigencia_hasta": filas[0]["vigencia_hasta"],
+            "metodo": metodo, "tco": pub if pub is not None else oficial_calc,
+            "tco_promedio": r2(prom), "tco_mediana": r2(med),
+            "n_ops": sum(r["n_ops"] for r in filas), "monto_usd": sum(r["monto_usd"] for r in filas),
+            "colchon_baja_usd": round(abajo) if abajo is not None else None,
+            "colchon_sube_usd": round(arriba) if arriba is not None else None,
+        })
+        verificacion.append({"fecha_corte": fecha, "metodo": metodo, "tco_publicado": pub,
+                             "tco_recalculado": oficial_calc,
+                             "ok": pub is not None and oficial_calc is not None and abs(pub - oficial_calc) < 0.006})
 
-    # total diario
-    total: dict[str, dict] = {}
-    for d in diario.values():
-        t = total.setdefault(d["fecha_corte"], {"fecha_corte": d["fecha_corte"], "vigencia": d["vigencia"],
-                                                "n_ops": 0, "monto_usd": 0.0, "_v": 0.0})
-        t["n_ops"] += d["n_ops"]
-        t["monto_usd"] += d["monto_usd"]
-        t["_v"] += (d["tc_ponderado"] or 0) * d["monto_usd"]
-    for t in total.values():
-        t["tco"] = round(t["_v"] / t["monto_usd"], 4) if t["monto_usd"] else None
-        del t["_v"]
+        tco_ref = pub if pub is not None else oficial_calc
+        bancos = sorted({r["banco"] for r in filas})
+        for b in bancos:
+            propias = [(r["tc"], r["monto_usd"]) for r in filas if r["banco"] == b]
+            resto = [(r["tc"], r["monto_usd"]) for r in filas if r["banco"] != b]
+            sin_b = estadistico(resto, metodo)
+            diario.append({
+                "fecha_corte": fecha, "banco": b, "metodo": metodo,
+                "n_ops": sum(r["n_ops"] for r in filas if r["banco"] == b),
+                "monto_usd": sum(m for _, m in propias),
+                "tc_promedio": r2(promedio_pond(propias)), "tc_mediana": r2(mediana_pond(propias)),
+                "tc_publicado": publicado.get(b),
+                "usd_bajo_tco": sum(m for tc, m in propias if tc_ref_cmp(tc, tco_ref) < 0),
+                "usd_en_tco": sum(m for tc, m in propias if tc_ref_cmp(tc, tco_ref) == 0),
+                "usd_sobre_tco": sum(m for tc, m in propias if tc_ref_cmp(tc, tco_ref) > 0),
+                "tco_sin_banco": r2(sin_b),
+            })
 
     return {
-        "generado": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generado": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "fuente": URL_LISTA,
+        "metodologia": METODOLOGIA,
         "operaciones": ops,
-        "diario": sorted(diario.values(), key=lambda d: (d["fecha_corte"], d["banco"])),
-        "total": sorted(total.values(), key=lambda t: t["fecha_corte"]),
+        "diario": diario,
+        "total": total,
         "verificacion": verificacion,
     }
 
 
+def tc_ref_cmp(tc: float, ref: float | None) -> int:
+    if ref is None:
+        return 0
+    if abs(tc - ref) < 1e-9:
+        return 0
+    return -1 if tc < ref else 1
+
+
+# --------------------------------------------------------------------------- #
+# Escritura
+# --------------------------------------------------------------------------- #
+def escribir_csv(nombre: str, filas: list[dict]) -> None:
+    if not filas:
+        return
+    with (DATA / nombre).open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=list(filas[0].keys()))
+        w.writeheader()
+        w.writerows(filas)
+
+
 def escribir_salidas(c: dict) -> None:
     DATA.mkdir(exist_ok=True)
-    with (DATA / "operaciones.csv").open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["fecha_corte", "vigencia", "banco", "tc", "n_ops", "monto_usd"])
-        w.writeheader()
-        w.writerows(c["operaciones"])
-    with (DATA / "diario.csv").open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["fecha_corte", "vigencia", "banco", "n_ops", "monto_usd", "tc_ponderado"])
-        w.writeheader()
-        w.writerows(c["diario"])
-    with (DATA / "verificacion.csv").open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["fecha_corte", "tco_publicado", "tco_recalculado", "ok"])
-        w.writeheader()
-        w.writerows(c["verificacion"])
-    (DATA / "tco.json").write_text(json.dumps(c, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    escribir_csv("operaciones.csv", c["operaciones"])
+    escribir_csv("diario.csv", c["diario"])
+    escribir_csv("total.csv", c["total"])
+    escribir_csv("verificacion.csv", c["verificacion"])
+
+    compacto = dict(c)
+    # en el JSON las operaciones van como listas para reducir tamaño
+    compacto["operaciones"] = [[r["fecha_corte"], r["banco"], r["tc"], r["n_ops"], round(r["monto_usd"], 2)]
+                               for r in c["operaciones"]]
+    compacto["operaciones_campos"] = ["fecha_corte", "banco", "tc", "n_ops", "monto_usd"]
+    del compacto["diario"]  # el dashboard lo recalcula a partir de las operaciones
+    (DATA / "tco.json").write_text(json.dumps(compacto, ensure_ascii=False, separators=(",", ":")),
+                                   encoding="utf-8")
 
     db = DATA / "tco.db"
     if db.exists():
         db.unlink()
     con = sqlite3.connect(db)
-    con.executescript("""
-        CREATE TABLE operaciones (fecha_corte TEXT, vigencia TEXT, banco TEXT, tc REAL, n_ops INTEGER, monto_usd REAL);
-        CREATE TABLE diario (fecha_corte TEXT, vigencia TEXT, banco TEXT, n_ops INTEGER, monto_usd REAL, tc_ponderado REAL);
-        CREATE TABLE total (fecha_corte TEXT, vigencia TEXT, n_ops INTEGER, monto_usd REAL, tco REAL);
-        CREATE INDEX ix_ops ON operaciones (fecha_corte, banco);
-    """)
-    con.executemany("INSERT INTO operaciones VALUES (?,?,?,?,?,?)",
-                    [(r["fecha_corte"], r["vigencia"], r["banco"], r["tc"], r["n_ops"], r["monto_usd"]) for r in c["operaciones"]])
-    con.executemany("INSERT INTO diario VALUES (?,?,?,?,?,?)",
-                    [(r["fecha_corte"], r["vigencia"], r["banco"], r["n_ops"], r["monto_usd"], r["tc_ponderado"]) for r in c["diario"]])
-    con.executemany("INSERT INTO total VALUES (?,?,?,?,?)",
-                    [(r["fecha_corte"], r["vigencia"], r["n_ops"], r["monto_usd"], r["tco"]) for r in c["total"]])
+    for nombre in ("operaciones", "diario", "total", "verificacion"):
+        filas = c[nombre]
+        if not filas:
+            continue
+        cols = list(filas[0].keys())
+        con.execute(f"CREATE TABLE {nombre} ({', '.join(cols)})")
+        con.executemany(f"INSERT INTO {nombre} VALUES ({', '.join('?' * len(cols))})",
+                        [tuple(r[k] for k in cols) for r in filas])
+    con.execute("CREATE INDEX ix_ops ON operaciones (fecha_corte, banco)")
     con.commit()
     con.close()
 
